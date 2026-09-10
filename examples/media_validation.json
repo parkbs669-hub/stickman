@@ -1,0 +1,23 @@
+{
+  "programs": [],
+  "stream_groups": [],
+  "streams": [
+    {
+      "codec_type": "video",
+      "width": 808,
+      "height": 720,
+      "avg_frame_rate": "24/1",
+      "duration": "24.000000",
+      "nb_frames": "576"
+    },
+    {
+      "codec_type": "audio",
+      "avg_frame_rate": "0/0",
+      "duration": "24.000000",
+      "nb_frames": "1035"
+    }
+  ],
+  "format": {
+    "duration": "24.000000"
+  }
+}

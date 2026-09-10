@@ -1,0 +1,63 @@
+test_empty_short_and_silent_audio (test_motion.AudioTests.test_empty_short_and_silent_audio) ... ok
+test_missing_audio_returns_pair_and_removes_partial_file (test_motion.AudioTests.test_missing_audio_returns_pair_and_removes_partial_file) ... ok
+test_single_onset_maps_near_the_video_impact (test_motion.AudioTests.test_single_onset_maps_near_the_video_impact) ... ok
+test_confidence_survives_smoothing (test_motion.MotionTests.test_confidence_survives_smoothing) ... ok
+test_filter_stability_without_tuning_change (test_motion.MotionTests.test_filter_stability_without_tuning_change) ... ok
+test_grip_placement_for_both_hands (test_motion.MotionTests.test_grip_placement_for_both_hands) ... ok
+test_impact_deduplication_uses_seconds (test_motion.MotionTests.test_impact_deduplication_uses_seconds) ... ok
+test_missing_pose_global_correction_is_safe (test_motion.MotionTests.test_missing_pose_global_correction_is_safe) ... ok
+test_stationary_and_missing_poses_do_not_invent_impacts (test_motion.MotionTests.test_stationary_and_missing_poses_do_not_invent_impacts) ... ok
+test_supersampling_does_not_change_final_limb_width (test_motion.MotionTests.test_supersampling_does_not_change_final_limb_width) ... ok
+test_swapped_leg_keeps_its_confidence (test_motion.MotionTests.test_swapped_leg_keeps_its_confidence) ... ok
+test_bounded_gaps_only (test_pipeline.PipelineTests.test_bounded_gaps_only) ... ok
+test_cache_preserves_actual_confidence (test_pipeline.PipelineTests.test_cache_preserves_actual_confidence) ... ok
+test_ensemble_keyword_contract (test_pipeline.PipelineTests.test_ensemble_keyword_contract) ... ok
+test_gaps_across_cut_not_interpolated (test_pipeline.PipelineTests.test_gaps_across_cut_not_interpolated) ... ok
+test_invalid_manual_frame_is_not_clamped (test_pipeline.PipelineTests.test_invalid_manual_frame_is_not_clamped) ... ok
+test_invalid_speed_and_output_name_fail_early (test_pipeline.PipelineTests.test_invalid_speed_and_output_name_fail_early) ... ok
+test_launcher_paths_are_separate_arguments (test_pipeline.PipelineTests.test_launcher_paths_are_separate_arguments) ... ok
+test_manual_impacts_bypass_detection_and_spacing (test_pipeline.PipelineTests.test_manual_impacts_bypass_detection_and_spacing) ... ok
+test_no_midpoint_fabrication (test_pipeline.PipelineTests.test_no_midpoint_fabrication) ... ok
+test_truncated_cache_is_a_miss (test_pipeline.PipelineTests.test_truncated_cache_is_a_miss) ... ok
+test_audio_trim_uses_source_time_and_tempo_preserves_pitch (test_runtime.FFmpegIntegrationTests.test_audio_trim_uses_source_time_and_tempo_preserves_pitch) ... ok
+test_bad_source_surfaces_probe_error (test_runtime.FFmpegIntegrationTests.test_bad_source_surfaces_probe_error) ... ok
+test_failed_encoder_and_exception_close_resources (test_runtime.FFmpegIntegrationTests.test_failed_encoder_and_exception_close_resources) ... ok
+test_short_audio_does_not_truncate_video_at_fast_speed (test_runtime.FFmpegIntegrationTests.test_short_audio_does_not_truncate_video_at_fast_speed) ... ok
+test_silent_source_is_copied_without_loss (test_runtime.FFmpegIntegrationTests.test_silent_source_is_copied_without_loss) ... ok
+test_writer_produces_expected_duration_and_frame_count (test_runtime.FFmpegIntegrationTests.test_writer_produces_expected_duration_and_frame_count) ... ok
+test_atomic_failure_preserves_existing_file (test_runtime.RuntimeTests.test_atomic_failure_preserves_existing_file) ... ok
+test_bad_options_are_rejected (test_runtime.RuntimeTests.test_bad_options_are_rejected) ... ok
+test_cache_rejects_malformed_or_nonfinite_landmarks (test_runtime.RuntimeTests.test_cache_rejects_malformed_or_nonfinite_landmarks) ... ok
+test_cache_roundtrip_and_settings_invalidation (test_runtime.RuntimeTests.test_cache_roundtrip_and_settings_invalidation) ... ok
+test_identity_hashes_entire_file (test_runtime.RuntimeTests.test_identity_hashes_entire_file) ... ok
+test_valid_options_and_extreme_tempos (test_runtime.RuntimeTests.test_valid_options_and_extreme_tempos) ... ok
+test_bright_class_does_not_wrap_to_black (test_tracknet.TrackNetTests.test_bright_class_does_not_wrap_to_black) ... ok
+test_model_output_preserves_pooling_dimensions (test_tracknet.TrackNetTests.test_model_output_preserves_pooling_dimensions) ... ok
+test_normalized_heatmap_supported (test_tracknet.TrackNetTests.test_normalized_heatmap_supported) ... ok
+
+----------------------------------------------------------------------
+Ran 36 tests in 4.975s
+
+OK
+[i] 오디오 타구음 분석 중...
+[i] 오디오 타구음 분석 중...
+[i] 오디오 타구음 분석 중...
+[i] 오디오 타구음 분석 중...
+[i] 오디오 타구음 분석 중...
+[i] 오디오 타구음 분석 중...
+[!] 오디오 추출 실패: Command '['ffmpeg', '-y', '-nostdin', '-i', 'sample.mp4', '-map', '0:a:0', '-vn', '-ac', '1', '-ar', '44100', '-c:a', 'pcm_s16le', 'C:\\Users\\Public\\Documents\\ESTsoft\\CreatorTemp\\tennis_audio_836jg8f0\\audio.wav']' returned non-zero exit status 1.
+[i] 오디오 타구음 분석 중...
+[✓] Audio impact at Frame 14 (t=0.484s, onset=1.000)
+[✓] Arm-extension impact at Frame 33 (ext=0.2973, window=13-53)
+[✓] Arm-extension impact at Frame 93 (ext=0.2973, window=73-113)
+[✓] Arm-extension impact at Frame 33 (ext=0.2973, window=13-53)
+[✓] Arm-extension impact at Frame 93 (ext=0.2973, window=73-113)
+[i] Removed f93: too close to f33 (lower extension)
+[i] 통합 앙상블 감지...
+[i] 오디오+랜드마크 실패 → 팔꿈치 조건 팔신장 폴백...
+[i] 통합 앙상블 감지...
+[i] 오디오+랜드마크 실패 → 팔꿈치 조건 팔신장 폴백...
+[i] 통합 앙상블 감지...
+[i] 오디오+랜드마크 실패 → 팔꿈치 조건 팔신장 폴백...
+[i] 통합 앙상블 감지...
+[i] 오디오+랜드마크 실패 → 팔꿈치 조건 팔신장 폴백...

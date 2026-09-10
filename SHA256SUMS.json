@@ -1,0 +1,21 @@
+{
+  "examples/alcaraz_upgrade_preview_analysis.json": "4e632463a61d83615b4a281a68e66382c63824864204afb94a516a97aac98b6c",
+  "examples/alcaraz_upgrade_preview_pose_cache.json": "a58f15e9f98eb2ca0d95f29d7c9927ce52f05182e2e3eaeb955791905ab6db99",
+  "examples/alcaraz_upgrade_preview_stickman.mp4": "8edb25b34de93b90c4dc6379083134e672aba7348e3a39f8c35470c267639ffd",
+  "examples/media_validation.json": "c50aafc15ca3e950825a40dd83b29390dccad46377f530ebf39b75aeef4fec1e",
+  "examples/preview.png": "2ea906ef035e29fd609f515baeacfc6dae8516261a531aab9838514a09865bb7",
+  "launch.ps1": "257b58e7d56174d99228bc360e77dee02d347b36ddc597d032d3a473fb4eca6d",
+  "models/pose_landmarker_full.task": "5134a3aad27a58b93da0088d431f366da362b44e3ccfbe3462b3827a839011b1",
+  "README.md": "6214240560a87104e44130048e7d84d5f51e6192ef01f50d68ee825b9aa66e7e",
+  "requirements.txt": "91184598a1ec94e960e584208797c66792444974eaba91d12e647816aed59a47",
+  "stickman_launcher.py": "50723eab6f99de4c0134e71b13f2f29986d98e2463536a9097953bbd19043d5a",
+  "stickman_runtime.py": "97915b5e91d1d042c5d2d7a440168e2db00cd82dee6a1a1bee330c09a2545dbb",
+  "tennis_stickman_v12_4_upgraded.py": "1368e27c493197a65cb62f866125bb114b537d48d56f84a9d850141f51eb653f",
+  "tests/last_run.txt": "678140e06f27c98e26122b147bb9b4e34f79390beeaba3eb533c3282416ac84a",
+  "tests/test_motion.py": "2bf4944530ebf8fd5c9d9a79d25ec08883f454e4b52f837e5822b0fa084662b5",
+  "tests/test_pipeline.py": "e799d0e13b9ed7b5f323fd2ead2e1a3611889b2a57ddac43813ffbd705e24896",
+  "tests/test_runtime.py": "d7fd83622f2a779e476b98fbcbb9f0033dc40395e57b58ae7f891cb3678472d3",
+  "tests/test_tracknet.py": "348bd612c1a44a23992e9f766f8cd632990d9d8e1d0ad716f4ba08ff8ac5994b",
+  "VALIDATION.md": "aa13067e950533c490a0321d1ae552d1a5573e6d472972b7a615e7ac8dfc7b44",
+  "실행하기.cmd": "0367b112e8e89b7b5d6ac86c4c7c2e3d570ff76e4b2213b79a8e3e68565b9340"
+}

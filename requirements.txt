@@ -1,0 +1,7 @@
+# Tested with Python 3.13 on Windows. FFmpeg/FFprobe are separate programs.
+numpy==2.4.6
+opencv-python==4.13.0.92
+mediapipe==0.10.35
+Pillow==11.3.0
+# Optional URL downloads: pip install yt-dlp
+# Optional --ball-track: pip install torch  (matching TrackNet weights required)

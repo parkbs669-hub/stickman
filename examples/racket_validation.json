@@ -1,0 +1,9 @@
+{
+  "matched_source_frame": 19,
+  "output_frame": 38,
+  "old_racket_degrees": 41.61346221712825,
+  "new_racket_degrees": -58.17482207215511,
+  "angle_convention": "right=0, up=-90",
+  "direction_source": "hand_grip_estimate",
+  "note": "Source screenshot matched by image correlation; hand-grip axis is an estimate."
+}

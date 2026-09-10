@@ -24,7 +24,7 @@ jobs:
       - name: Run uploaded equipment contract tests
         run: python test_equipment.py
       - name: Render actual 288-frame Alcaraz pose cache
-        run: python tools/chatgpt_render_cache_test.py
+        run: PYTHONPATH=. python tools/chatgpt_render_cache_test.py
       - name: Upload browser-safe MP4
         uses: actions/upload-artifact@v4
         with:

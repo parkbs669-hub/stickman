@@ -22,8 +22,9 @@ from stickman_runtime import (validate_options, video_identity, load_pose_cache,
                               save_pose_cache, atomic_write_json,
                               FFmpegVideoWriter, mux_audio)
 from stickman_racket import grip_direction, RacketDirectionTracker
+from stickman_equipment import body_height_pixels, racket_dimensions, RACKET_TO_BODY_HEIGHT
 
-VERSION = "12.4-upgrade.2"
+VERSION = "12.4-upgrade.3"
 
 # ─────────────────────────────────────────
 # CLI 인자 파싱
@@ -108,7 +109,7 @@ HEAD_OUTLINE_THICKNESS  = 8 * SSAA
 TORSO_OUTLINE_THICKNESS = 6 * SSAA
 HEAD_FILL_COLOR   = (255, 255, 255)
 UPPER_FILL_COLOR  = (255, 255, 255)  # 흰색 상의 (BGR)
-SHORTS_FILL_COLOR = (40, 35, 180)    # 빨간색 반바지 (BGR)
+SHORTS_FILL_COLOR = (45, 48, 210)    # 선명한 빨간색 반바지 (BGR)
 OUTLINE_COLOR     = (20, 20, 20)
 SHOE_FILL_COLOR   = (155, 155, 155)
 SHOE_OUTLINE_COLOR = (20, 20, 20)
@@ -366,9 +367,38 @@ def draw_body_line(canvas, p1, p2, thickness=None):
     cv2.line(canvas, p1, p2, BODY_COLOR, thickness or LIMB_THICKNESS, cv2.LINE_AA)
 
 
+def _clothing_curve(start, control, end, steps=12):
+    """Quadratic garment contour in the current pose's pixel coordinates."""
+    t = np.linspace(0.0, 1.0, steps)[:, None]
+    return (1.0 - t) ** 2 * start + 2.0 * (1.0 - t) * t * control + t ** 2 * end
+
+
 def draw_pentagon_torso(canvas, neck, l_shoulder, r_shoulder, l_hip, r_hip):
-    pts = np.array([neck, r_shoulder, r_hip, l_hip, l_shoulder], dtype=np.int32)
+    """White sleeveless shirt; all seams follow the supplied moving joints."""
+    ls, rs, lh, rh, nk = [np.asarray(p, dtype=np.float64)
+                          for p in (l_shoulder, r_shoulder, l_hip, r_hip, neck)]
+    across = rs - ls
+    down = (lh + rh - ls - rs) * 0.5
+    hem_l, hem_r = lh - 0.035 * (rh - lh), rh + 0.035 * (rh - lh)
+    waist_l = ls * 0.28 + lh * 0.72 + across * 0.025
+    waist_r = rs * 0.28 + rh * 0.72 - across * 0.025
+    collar_l, collar_r = nk - across * 0.11, nk + across * 0.11
+    collar = _clothing_curve(collar_l, nk + down * 0.075, collar_r)
+    side_r = _clothing_curve(rs, waist_r - down * 0.03, hem_r)
+    hem = _clothing_curve(hem_r, (hem_l + hem_r) * 0.5 + down * 0.065, hem_l)
+    side_l = _clothing_curve(hem_l, waist_l - down * 0.03, ls)
+    pts = np.rint(np.vstack(([ls], collar, [rs], side_r, hem, side_l))).astype(np.int32)
     cv2.fillPoly(canvas, [pts], UPPER_FILL_COLOR, cv2.LINE_AA)
+
+    def fabric(u, v):
+        return ((1.0 - u) * ls + u * rs) * (1.0 - v) + ((1.0 - u) * lh + u * rh) * v
+
+    # Light fabric folds are drawn inside the shirt, with a broad white center.
+    for uv, shade in [([(0.06, 0.17), (0.16, 0.49), (0.48, 0.79), (0.28, 0.51)], (214, 216, 216)),
+                      ([(0.95, 0.17), (0.87, 0.56), (0.72, 0.74), (0.84, 0.49)], (224, 225, 225)),
+                      ([(0.22, 0.82), (0.41, 0.93), (0.79, 0.98), (0.48, 0.90)], (208, 211, 211))]:
+        fold = np.rint([fabric(u, v) for u, v in uv]).astype(np.int32)
+        cv2.fillPoly(canvas, [fold], shade, cv2.LINE_AA)
     cv2.polylines(canvas, [pts], isClosed=True, color=OUTLINE_COLOR,
                   thickness=TORSO_OUTLINE_THICKNESS, lineType=cv2.LINE_AA)
 
@@ -472,134 +502,171 @@ def _stable_shoe_basis(foot, knee_to_ankle, size, side_key):
     return direction, normal, blend
 
 
-def draw_shoe(canvas, ankle, heel, toe, knee, size, is_back_view, side_key="left"):
-    global _shoe_blend_cache
+def _rounded_shoe_polygon(points, passes=2):
+    """Round a small local outline without raster assets or changing its anchor."""
+    points = np.asarray(points, dtype=np.float64)
+    for _ in range(passes):
+        following = np.roll(points, -1, axis=0)
+        points = np.stack((0.75 * points + 0.25 * following,
+                           0.25 * points + 0.75 * following), axis=1).reshape(-1, 2)
+    return np.rint(points).astype(np.int32)
 
-    # 왼발(밝은 회색)·오른발(어두운 회색)로 구분
-    shoe_fill = (210, 210, 210) if side_key == "left" else (90, 90, 90)
 
-    ankle = np.array(ankle, dtype=np.float64)
-    heel  = np.array(heel,  dtype=np.float64)
-    toe   = np.array(toe,   dtype=np.float64)
-    knee  = np.array(knee,  dtype=np.float64)
+def draw_shoe(canvas, ankle, heel, toe, knee, size, is_back_view,
+              side_key="left", foot_depth=None):
+    """Draw an opaque tennis shoe, continuously turning with the tracked foot.
 
-    foot = toe - heel
-    direction, side_normal, blend_val = _stable_shoe_basis(
-        foot, ankle - knee, size, side_key)
+    Geometry morphs between compatible front/side outlines, rather than fading
+    two silhouettes. All vertices stay relative to the current ankle: only
+    uncertain rotation and front/rear appearance are filtered. ``foot_depth``
+    is toe-minus-heel pose z; positive means the toe points away from camera.
+    """
+    ankle = np.asarray(ankle, dtype=np.float64)
+    heel = np.asarray(heel, dtype=np.float64)
+    toe = np.asarray(toe, dtype=np.float64)
+    knee = np.asarray(knee, dtype=np.float64)
+    size = max(float(size), 1.0)
+    previous = _shoe_blend_cache.get(side_key)
+    previous_back = previous.get("back_blend") if isinstance(previous, dict) else None
+    direction, side_normal, side = _stable_shoe_basis(
+        toe - heel, ankle - knee, size, side_key)
+    rear = float(bool(is_back_view))
+    if foot_depth is not None and math.isfinite(float(foot_depth)):
+        # Broad, continuous depth transition avoids a binary front/rear flip
+        # when uncertain heel/toe landmarks cross in depth.
+        rear = float(np.clip(0.5 + float(foot_depth) / 0.08, 0.0, 1.0))
+        rear = rear * rear * (3.0 - 2.0 * rear)
+    if previous_back is not None:
+        rear = previous_back + 0.32 * (rear - previous_back)
+    _shoe_blend_cache[side_key]["back_blend"] = rear
+    # Keep contour winding consistent while the side normal changes sign.
+    width = -side_normal
+    line_width = max(int(round(1.4 * LW)), 1)
+    outline_width = max(int(round(2.7 * LW)), 2)
+    upper = (145, 145, 145)
+    panel = (112, 112, 112)
+    dark = (65, 65, 65)
+    outline = SHOE_OUTLINE_COLOR
 
-    # 헬퍼 렌더러 정의
-    def render_front_view(target_canvas):
-        d_dir = direction
-        w_dir = np.array([-d_dir[1], d_dir[0]]) * 0.70
+    def point(front, profile, back=None):
+        front = np.asarray(front, dtype=float)
+        if back is not None:
+            front = front * (1.0 - rear) + np.asarray(back, dtype=float) * rear
+        # A heel view is a little shorter/wider in screen space than the toe.
+        facing = width * front[0] * 1.25 + direction * front[1] * (1.30 - 0.12 * rear)
+        lateral = direction * profile[0] * 1.42 + side_normal * profile[1] * 1.10
+        return ankle + size * (facing * (1.0 - side) + lateral * side)
 
-        if is_back_view:
-            profile = [
-                (-0.22, 0.00), (-0.32, 0.20), (-0.40, 0.60), (-0.20, 0.65),
-                ( 0.20, 0.65), ( 0.40, 0.60), ( 0.32, 0.20), ( 0.22, 0.00),
-            ]
-            pts = np.array([
-                (ankle + w_dir * fx * size + d_dir * fy * size)
-                for fx, fy in profile
-            ], dtype=np.int32)
+    def points(front, profile, back=None):
+        return np.array([point(f, s, None if back is None else b)
+                         for f, s, b in zip(front, profile,
+                                           front if back is None else back)])
 
-            cv2.fillPoly(target_canvas, [pts], shoe_fill, cv2.LINE_AA)
-            cv2.polylines(target_canvas, [pts], isClosed=True, color=SHOE_OUTLINE_COLOR,
-                          thickness=max(int(3 * LW), 2), lineType=cv2.LINE_AA)
+    def polygon(front, profile, color, back=None, stroke=False, rounded=True):
+        vertices = points(front, profile, back)
+        vertices = (_rounded_shoe_polygon(vertices) if rounded
+                    else np.rint(vertices).astype(np.int32))
+        cv2.fillPoly(canvas, [vertices], color, cv2.LINE_AA)
+        if stroke:
+            cv2.polylines(canvas, [vertices], True, outline, line_width, cv2.LINE_AA)
+        return vertices
 
-            sole = np.array([
-                (ankle - w_dir * (size * 0.40) + d_dir * (size * 0.60)),
-                (ankle - w_dir * (size * 0.20) + d_dir * (size * 0.65)),
-                (ankle + w_dir * (size * 0.20) + d_dir * (size * 0.65)),
-                (ankle + w_dir * (size * 0.40) + d_dir * (size * 0.60))
-            ], dtype=np.int32)
-            cv2.polylines(target_canvas, [sole], isClosed=False, color=(110, 110, 110),
-                          thickness=max(int(2 * LW), 2), lineType=cv2.LINE_AA)
+    def line(front, profile, color, thickness=None, back=None):
+        vertices = np.rint(points(front, profile, back)).astype(np.int32)
+        cv2.polylines(canvas, [vertices], False, color,
+                      thickness or line_width, cv2.LINE_AA)
 
-            heel_strip_start = (ankle + d_dir * (size * 0.05)).astype(np.int32)
-            heel_strip_end = (ankle + d_dir * (size * 0.22)).astype(np.int32)
-            cv2.line(target_canvas, heel_strip_start, heel_strip_end, SHOE_OUTLINE_COLOR,
-                     max(int(2.5 * LW), 2), cv2.LINE_AA)
-        else:
-            profile = [
-                (-0.22, 0.00), (-0.35, 0.25), (-0.42, 0.70), (-0.20, 0.76),
-                ( 0.20, 0.76), ( 0.42, 0.70), ( 0.35, 0.25), ( 0.22, 0.00),
-            ]
-            pts = np.array([
-                (ankle + w_dir * fx * size + d_dir * fy * size)
-                for fx, fy in profile
-            ], dtype=np.int32)
+    front_outline = [(-.22, 0), (-.29, .13), (-.36, .30), (-.40, .57),
+                     (-.38, .73), (-.29, .82), (-.14, .87), (.14, .87),
+                     (.30, .83), (.38, .75), (.40, .58), (.34, .30),
+                     (.29, .14), (.22, 0), (.14, .06), (-.14, .06)]
+    side_outline = [(-.14, -.04), (-.25, .15), (-.28, .36), (-.29, .50),
+                    (-.26, .62), (-.13, .70), (.10, .74), (.57, .78),
+                    (.93, .75), (1.07, .65), (1.07, .51), (.93, .44),
+                    (.58, .32), (.32, .16), (.17, -.04), (.07, .06)]
+    outer = polygon(front_outline, side_outline, upper)
 
-            cv2.fillPoly(target_canvas, [pts], shoe_fill, cv2.LINE_AA)
-            cv2.polylines(target_canvas, [pts], isClosed=True, color=SHOE_OUTLINE_COLOR,
-                          thickness=max(int(3 * LW), 2), lineType=cv2.LINE_AA)
+    # White sculpted midsole wraps around the toe and heel in every view.
+    polygon([(-.39, .66), (-.38, .73), (-.29, .82), (-.14, .87),
+             (.14, .87), (.30, .83), (.38, .75), (.40, .66),
+             (.26, .73), (-.26, .73)],
+            [(-.28, .49), (-.26, .62), (-.13, .70), (.10, .74),
+             (.57, .78), (.93, .75), (1.07, .65), (1.07, .55),
+             (.64, .65), (.03, .51)], (244, 244, 242), stroke=True)
+    # Outsole, kept narrower than the midsole so white sidewall remains clear.
+    polygon([(-.36, .77), (-.27, .83), (-.12, .87), (.13, .87),
+             (.29, .83), (.36, .77), (.23, .81), (-.22, .81)],
+            [(-.23, .65), (-.12, .71), (.11, .75), (.57, .78),
+             (.95, .75), (1.07, .65), (.77, .70), (.05, .66)],
+            (38, 38, 38))
 
-            sole = np.array([
-                (ankle - w_dir * (size * 0.42) + d_dir * (size * 0.70)),
-                (ankle - w_dir * (size * 0.20) + d_dir * (size * 0.76)),
-                (ankle + w_dir * (size * 0.20) + d_dir * (size * 0.76)),
-                (ankle + w_dir * (size * 0.42) + d_dir * (size * 0.70))
-            ], dtype=np.int32)
-            cv2.polylines(target_canvas, [sole], isClosed=False, color=(110, 110, 110),
-                          thickness=max(int(2 * LW), 2), lineType=cv2.LINE_AA)
+    # Heel counter/front side panels use the same vertex correspondence.
+    polygon([(-.23, .06), (-.31, .23), (-.37, .62), (-.26, .68),
+             (-.16, .48), (-.13, .15)],
+            [(-.14, .04), (-.25, .19), (-.27, .46), (.04, .52),
+             (.18, .42), (.01, .23)], panel, stroke=True)
+    polygon([(.23, .06), (.31, .23), (.37, .62), (.26, .68),
+             (.16, .48), (.13, .15)],
+            [(.18, .03), (.33, .17), (.71, .39), (.54, .60),
+             (.25, .56), (.08, .31)], (124, 124, 124), stroke=True)
 
-            lace_start = (ankle + d_dir * (size * 0.12))
-            lace_end = (ankle + d_dir * (size * 0.45))
-            cv2.line(target_canvas, lace_start.astype(np.int32), lace_end.astype(np.int32),
-                     SHOE_OUTLINE_COLOR, max(int(1 * LW), 1), cv2.LINE_AA)
+    # Mesh quarter panel with small perforations, visible in profile.
+    for row in range(3):
+        for col in range(4):
+            f = (-.255 + col * .025, .32 + row * .075)
+            s = (.10 + col * .105 + row * .015, .32 + row * .065)
+            center = tuple(np.rint(point(f, s)).astype(int))
+            cv2.circle(canvas, center, max(int(round(.48 * LW)), 1),
+                       (91, 91, 91), -1, cv2.LINE_AA)
 
-            for frac in [0.20, 0.30, 0.40]:
-                bar_center = ankle + d_dir * (size * frac)
-                bar_left = (bar_center - w_dir * (size * 0.12)).astype(np.int32)
-                bar_right = (bar_center + w_dir * (size * 0.12)).astype(np.int32)
-                cv2.line(target_canvas, bar_left, bar_right, (255, 255, 255),
-                         max(int(1 * LW), 1), cv2.LINE_AA)
+    # Toe cap becomes the reinforcing heel patch when this foot faces away.
+    cap_front = [(-.27, .55), (-.34, .68), (-.24, .76), (.24, .76),
+                 (.34, .68), (.27, .55)]
+    cap_back = [(-.29, .41), (-.34, .64), (-.24, .72), (.24, .72),
+                (.34, .64), (.29, .41)]
+    cap_color = int(round(165 - 25 * rear * (1.0 - side)))
+    polygon(cap_front, [(.67, .41), (.57, .59), (.75, .65),
+                        (1.04, .58), (1.04, .51), (.92, .46)],
+            (cap_color,) * 3, back=cap_back, stroke=True)
 
-            toe_cap_center = ankle + d_dir * (size * 0.52)
-            toe_cap_left = (toe_cap_center - w_dir * (size * 0.32)).astype(np.int32)
-            toe_cap_right = (toe_cap_center + w_dir * (size * 0.32)).astype(np.int32)
-            cv2.line(target_canvas, toe_cap_left, toe_cap_right, SHOE_OUTLINE_COLOR,
-                     max(int(1.2 * LW), 2), cv2.LINE_AA)
+    # Padded collar and tongue. The collar is attached to the live ankle.
+    polygon([(-.18, .03), (-.20, .12), (-.17, .46), (.17, .46),
+             (.20, .12), (.18, .03)],
+            [(.05, .06), (.15, .02), (.29, .17), (.62, .35),
+             (.51, .40), (.16, .22)], dark,
+            back=[(-.11, .02), (-.14, .13), (-.12, .55), (.12, .55),
+                  (.14, .13), (.11, .02)], stroke=True)
+    line([(-.21, .045), (-.12, .09), (.12, .09), (.21, .045)],
+         [(-.14, .015), (-.015, .17), (.13, .10), (.18, .015)],
+         (53, 53, 53), max(int(round(2.3 * LW)), 2))
 
-    def render_side_view(target_canvas):
-        u = direction
-        perp = side_normal
+    # White cross-laces on front and side; dark seams on the rear pull tab.
+    lace_visibility = 1.0 - rear * (1.0 - side)
+    lace_gray = int(round(103 + 148 * lace_visibility))
+    for index in range(4):
+        y = .16 + index * .08
+        x = .23 + index * .09
+        line([(-.125, y), (.125, y + .008)],
+             [(x, .145 + index * .057), (x - .055, .25 + index * .058)],
+             (lace_gray,) * 3, max(int(round(1.1 * LW)), 1),
+             back=[(-.075, y + .08), (.075, y + .08)])
+        if lace_visibility > .05:
+            eye_gray = int(round(92 - 55 * lace_visibility))
+            for sign in (-1, 1):
+                front_eye = (sign * .153, y)
+                side_eye = ((x + .015, .13 + index * .057) if sign < 0
+                            else (x - .068, .27 + index * .058))
+                center = tuple(np.rint(point(front_eye, side_eye,
+                                             (sign * .09, y + .08))).astype(int))
+                cv2.circle(canvas, center, max(int(round(.58 * LW)), 1),
+                           (eye_gray,) * 3, -1, cv2.LINE_AA)
 
-        length = size * 1.15
-        height = size * 0.62
-
-        profile = [
-            (-0.12, 0.00), (-0.22, 0.20), (-0.24, 0.50), (-0.18, 0.78),
-            (-0.06, 0.94), ( 0.18, 1.00), ( 0.48, 1.00), ( 0.72, 0.97),
-            ( 0.90, 0.88), ( 1.00, 0.72), ( 1.02, 0.54), ( 0.96, 0.36),
-            ( 0.82, 0.24), ( 0.60, 0.16), ( 0.38, 0.11), ( 0.18, 0.06),
-        ]
-        pts = np.array([
-            (ankle + u * fx * length + perp * fy * height)
-            for fx, fy in profile
-        ], dtype=np.int32)
-
-        cv2.fillPoly(target_canvas, [pts], SHOE_FILL_COLOR, cv2.LINE_AA)
-        cv2.polylines(target_canvas, [pts], isClosed=True, color=SHOE_OUTLINE_COLOR,
-                      thickness=max(int(3 * LW), 2), lineType=cv2.LINE_AA)
-
-        sole = np.array([
-            (ankle + u * fx * length + perp * fy * height)
-            for fx, fy in [(-0.06, 0.94), (0.18, 1.00), (0.48, 1.00), (0.72, 0.97)]
-        ], dtype=np.int32)
-        cv2.polylines(target_canvas, [sole], isClosed=False, color=(110, 110, 110),
-                      thickness=max(int(2 * LW), 2), lineType=cv2.LINE_AA)
-
-    # 블렌딩 렌더링 적용 (임시 캔버스 활용)
-    if blend_val <= 0.001:
-        render_front_view(canvas)
-    elif blend_val >= 0.999:
-        render_side_view(canvas)
-    else:
-        canvas_front = canvas.copy()
-        canvas_side = canvas.copy()
-        render_front_view(canvas_front)
-        render_side_view(canvas_side)
-        cv2.addWeighted(canvas_front, 1.0 - blend_val, canvas_side, blend_val, 0, dst=canvas)
+    # Recesses in the white heel-side midsole and rear logo/pull-tab highlight.
+    line([(-.28, .77), (-.20, .79), (-.16, .81)],
+         [(-.20, .58), (-.08, .65), (.04, .65)], (171, 171, 169))
+    line([(.28, .77), (.20, .79), (.16, .81)],
+         [(.07, .60), (.20, .66), (.30, .68)], (171, 171, 169))
+    cv2.polylines(canvas, [outer], True, outline, outline_width, cv2.LINE_AA)
 
 
 def draw_shadow(canvas, l_ankle, r_ankle):
@@ -613,80 +680,63 @@ def draw_shadow(canvas, l_ankle, r_ankle):
 
 
 def draw_shorts(canvas, l_hip, r_hip, l_knee, r_knee, head_r):
-    """
-    PGNC 반바지 실제 외곽선 실루엣 기반 렌더링 (v11)
-    - 정규화 좌표: 반바지 이미지에서 추출한 10-point 외곽선
-    - 허리선(l_hip~r_hip) + 밑단(무릎 45% 지점) 기준으로 변환
-    """
-    l_hip_arr   = np.array(l_hip,   dtype=np.float64)
-    r_hip_arr   = np.array(r_hip,   dtype=np.float64)
-    l_knee_arr  = np.array(l_knee,  dtype=np.float64)
-    r_knee_arr  = np.array(r_knee,  dtype=np.float64)
+    """Loose red tennis shorts whose hems follow each thigh at 44% length."""
+    lh, rh, lk, rk = [np.asarray(p, dtype=np.float64)
+                      for p in (l_hip, r_hip, l_knee, r_knee)]
+    hip_vec = rh - lh
+    hip_span = float(np.linalg.norm(hip_vec))
+    thigh = ((lk - lh) + (rk - rh)) * 0.5
+    if hip_span > 1e-4:
+        across = hip_vec / hip_span
+    else:
+        across = np.array([thigh[1], -thigh[0]])
+        across /= max(float(np.linalg.norm(across)), 1e-6)
+        if np.linalg.norm(across) < 0.5:
+            across = np.array([1.0, 0.0])
+    cloth_width = max(hip_span, float(head_r) * 0.90, 6.0 * LW)
+    padding = cloth_width * 0.09
+    hem_half_width = cloth_width * 0.29
+    waist_l, waist_r = lh - across * padding, rh + across * padding
+    waist_mid = (lh + rh) * 0.5
+    hem_l, hem_r = lh + (lk - lh) * 0.44, rh + (rk - rh) * 0.44
+    left_outer, left_inner = hem_l - across * hem_half_width, hem_l + across * hem_half_width
+    right_inner, right_outer = hem_r - across * hem_half_width, hem_r + across * hem_half_width
+    crotch = waist_mid + thigh * 0.21
 
-    # 반바지 밑단: 엉덩이~무릎의 45% 지점
-    l_bottom = l_hip_arr + 0.45 * (l_knee_arr - l_hip_arr)
-    r_bottom = r_hip_arr + 0.45 * (r_knee_arr - r_hip_arr)
+    # Union of two leg panels keeps cloth solid when the real thighs overlap.
+    polygons = [np.rint([waist_l, waist_mid, crotch, left_inner, left_outer]).astype(np.int32),
+                np.rint([waist_mid, waist_r, right_outer, right_inner, crotch]).astype(np.int32)]
+    all_pts = np.vstack(polygons)
+    x0 = max(0, int(all_pts[:, 0].min()) - TORSO_OUTLINE_THICKNESS - 2)
+    y0 = max(0, int(all_pts[:, 1].min()) - TORSO_OUTLINE_THICKNESS - 2)
+    x1 = min(canvas.shape[1], int(all_pts[:, 0].max()) + TORSO_OUTLINE_THICKNESS + 3)
+    y1 = min(canvas.shape[0], int(all_pts[:, 1].max()) + TORSO_OUTLINE_THICKNESS + 3)
+    if x1 <= x0 or y1 <= y0:
+        return
+    offset = np.array([x0, y0])
+    mask = np.zeros((y1 - y0, x1 - x0), dtype=np.uint8)
+    for poly in polygons:
+        cv2.fillPoly(mask, [poly - offset], 255)
+    roi = canvas[y0:y1, x0:x1]
+    roi[mask != 0] = SHORTS_FILL_COLOR
 
-    # 반바지 박스의 4개 꼭짓점 정의
-    # 왼쪽 허리 → 오른쪽 허리 → 오른쪽 밑단 → 왼쪽 밑단
-    # 정규화 좌표계: x(0=왼쪽, 1=오른쪽), y(0=허리, 1=밑단)
-    # 이미지에서 추출한 10-point 외곽선 (PGNC 반바지)
-    # 순서: 좌상단 → 좌하단 → 가랑이 → 우하단 → 우상단 → 허리 중앙
-    SHORTS_NORM_PTS = np.array([
-        [0.2029, 0.003 ],  # 0: 왼쪽 허리선 안쪽
-        [0.0692, 0.4012],  # 1: 왼쪽 옆선 중간
-        [0.0048, 0.8743],  # 2: 왼쪽 밑단 끝
-        [0.4511, 0.997 ],  # 3: 왼쪽 가랑이 밑단
-        [0.5036, 0.7904],  # 4: 가랑이 중앙 (오목)
-        [0.5561, 0.988 ],  # 5: 오른쪽 가랑이 밑단
-        [0.9976, 0.8743],  # 6: 오른쪽 밑단 끝
-        [0.9379, 0.4521],  # 7: 오른쪽 옆선 중간
-        [0.7947, 0.0   ],  # 8: 오른쪽 허리선 안쪽
-        [0.5012, 0.0778],  # 9: 허리 중앙 (고무밴드)
-    ], dtype=np.float64)
-
-    # 좌표 변환: 정규화(0~1) → 스크린 픽셀
-    # x축: l_hip(x=0) ~ r_hip(x=1) 방향 벡터
-    # y축: hip(y=0) ~ bottom(y=1) 방향 벡터
-    hip_vec   = r_hip_arr - l_hip_arr          # 허리 방향 벡터 (x축)
-    # 왼/오른 각각 다리 방향이 다를 수 있어 평균 사용
-    l_leg_vec = l_bottom - l_hip_arr
-    r_leg_vec = r_bottom - r_hip_arr
-
-    pts_screen = []
-    for nx, ny in SHORTS_NORM_PTS:
-        # 허리선 위의 점: l_hip + nx * (r_hip - l_hip)
-        waist_pt = l_hip_arr + nx * hip_vec
-        # 다리 방향: 왼쪽(nx<0.5)은 l_leg_vec, 오른쪽은 r_leg_vec 가중 블렌딩
-        leg_vec  = (1.0 - nx) * l_leg_vec + nx * r_leg_vec
-        # 최종 스크린 좌표
-        pt = waist_pt + ny * leg_vec
-        pts_screen.append(pt)
-
-    pts_screen = np.array(pts_screen, dtype=np.int32)
-
-    # 1. 빨간색 반바지 채우기
-    cv2.fillPoly(canvas, [pts_screen], SHORTS_FILL_COLOR, cv2.LINE_AA)
-
-    # 2. 허리 밴드 (약간 밝은 선)
-    waist_left  = pts_screen[0]
-    waist_right = pts_screen[8]
-    waist_mid   = pts_screen[9]
-    band_color  = (55, 50, 205)
-    band_thick  = max(int(LW * 1.5), 2)
-    cv2.line(canvas, tuple(waist_left), tuple(waist_mid),   band_color, band_thick, cv2.LINE_AA)
-    cv2.line(canvas, tuple(waist_mid),  tuple(waist_right), band_color, band_thick, cv2.LINE_AA)
-
-    # 3. 가운데 주름선 (가랑이 위 → 허리 중앙)
-    crease_top    = pts_screen[9]                      # 허리 중앙
-    crease_bottom = pts_screen[4]                      # 가랑이 오목점
-    crease_color  = (25, 20, 130)
-    crease_thick  = max(1, int(round(LW * 0.8)))
-    cv2.line(canvas, tuple(crease_top), tuple(crease_bottom), crease_color, crease_thick, cv2.LINE_AA)
-
-    # 4. 외곽선
-    cv2.polylines(canvas, [pts_screen], isClosed=True,
-                  color=OUTLINE_COLOR, thickness=TORSO_OUTLINE_THICKNESS, lineType=cv2.LINE_AA)
+    # Dark red tapered folds and narrow white side stripes.
+    detail = roi.copy()
+    for outside, inside, top in [(left_outer, left_inner, waist_l),
+                                (right_outer, right_inner, waist_r)]:
+        fold = np.rint([waist_mid + thigh * 0.10,
+                        crotch + (inside - crotch) * 0.22,
+                        inside * 0.78 + outside * 0.22,
+                        crotch + (inside - crotch) * 0.05]).astype(np.int32) - offset
+        cv2.fillPoly(detail, [fold], (35, 38, 175), cv2.LINE_AA)
+        stripe_top = top * 0.91 + waist_mid * 0.09 + thigh * 0.035
+        stripe_bottom = outside * 0.90 + inside * 0.10 - thigh * 0.015
+        cv2.line(detail, tuple(np.rint(stripe_top - offset).astype(int)),
+                 tuple(np.rint(stripe_bottom - offset).astype(int)),
+                 (250, 250, 250), max(1, int(round(2.5 * LW))), cv2.LINE_AA)
+    roi[mask != 0] = detail[mask != 0]
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    cv2.drawContours(roi, contours, -1, OUTLINE_COLOR, TORSO_OUTLINE_THICKNESS, cv2.LINE_AA)
 
 
 def draw_racket(canvas, wrist, elbow, head_r, nx_racket=None, ny_racket=None, racket_face_ratio=1.0):
@@ -946,7 +996,8 @@ def draw_ghost_figure(canvas, state, is_right_handed):
     draw_hand(canvas, h_wrist, hand_r)
     
     # 라켓 그리기
-    draw_racket(canvas, h_wrist, h_elbow, head_r, nx_racket, ny_racket, racket_face_ratio)
+    draw_racket(canvas, h_wrist, h_elbow, head_r, nx_racket, ny_racket, racket_face_ratio,
+                racket_length=state.get("racket_length"))
 
 
 # ─────────────────────────────────────────
@@ -966,7 +1017,7 @@ def get_grip_points(l_wrist, r_wrist, nx_racket, ny_racket, grip_length,
 
 def draw_stickman(canvas, landmarks, w, h, is_right_handed=True, racket_trail=None, hand_trail=None,
                   phase_smoother=None, is_serve=True, k=9999, strobe_history=None, strobe_frames=32, strobe_step=4, lag_scale=1.0, two_handed=False,
-                  racket_direction=None):
+                  racket_direction=None, racket_length=None, head_radius=None):
     lm = landmarks
     l_shoulder = get_point(lm, L_SHOULDER, w, h)
     r_shoulder = get_point(lm, R_SHOULDER, w, h)
@@ -991,8 +1042,12 @@ def draw_stickman(canvas, landmarks, w, h, is_right_handed=True, racket_trail=No
     shoulder_width = math.sqrt(
         (l_shoulder[0] - r_shoulder[0]) ** 2 + (l_shoulder[1] - r_shoulder[1]) ** 2
     )
-    head_r  = max(int(shoulder_width * 0.55), int(16 * LW))
+    head_r  = (max(2, int(head_radius)) if head_radius is not None
+               else max(int(shoulder_width * 0.55), int(16 * LW)))
     hand_r  = max(int(head_r * 0.26), int(6 * LW))
+    if racket_length is None:
+        racket_length = body_height_pixels([lm], w, h, SCALE_FACTOR) * RACKET_TO_BODY_HEIGHT
+    equipment_dims = racket_dimensions(racket_length)
 
     neck_v = np.array(neck, dtype=np.float64)
     spine  = neck_v - np.array(mid_hip, dtype=np.float64)
@@ -1107,6 +1162,7 @@ def draw_stickman(canvas, landmarks, w, h, is_right_handed=True, racket_trail=No
         "l_foot_idx": l_foot_idx, "r_foot_idx": r_foot_idx,
         "nx_racket": nx_racket, "ny_racket": ny_racket,
         "racket_face_ratio": _racket_face_prev,
+        "racket_length": racket_length,
         "head_r": head_r, "hand_r": hand_r,
         "is_back_view": is_back_view
     }
@@ -1131,12 +1187,8 @@ def draw_stickman(canvas, landmarks, w, h, is_right_handed=True, racket_trail=No
 
     # ── 네온 스윙 궤적 계산 및 그리기 ──
     racket_wrist = r_wrist if is_right_handed else l_wrist
-    grip_length = int(head_r * 1.2)
-    frame_ry = int(head_r * 1.5)
-    grip_end_x = int(racket_wrist[0] + nx_racket * grip_length)
-    grip_end_y = int(racket_wrist[1] + ny_racket * grip_length)
-    head_cx_racket = int(grip_end_x + nx_racket * frame_ry)
-    head_cy_racket = int(grip_end_y + ny_racket * frame_ry)
+    head_cx_racket = int(racket_wrist[0] + nx_racket * equipment_dims["center"])
+    head_cy_racket = int(racket_wrist[1] + ny_racket * equipment_dims["center"])
     racket_center = (head_cx_racket, head_cy_racket)
 
     if racket_trail is not None:
@@ -1165,7 +1217,7 @@ def draw_stickman(canvas, landmarks, w, h, is_right_handed=True, racket_trail=No
 
     # ── 3. Z-depth 기준 레이어 렌더링 ──
     # 양손 그립 모드: 왼손을 라켓 그립 상단(오른손 위)에 고정
-    grip_length_px = int(head_r * 1.2)
+    grip_length_px = int(equipment_dims["grip_end"])
     l_wrist_render, r_wrist_render = get_grip_points(
         l_wrist, r_wrist, nx_racket, ny_racket, grip_length_px,
         is_right_handed=is_right_handed, two_handed=two_handed,
@@ -1179,7 +1231,8 @@ def draw_stickman(canvas, landmarks, w, h, is_right_handed=True, racket_trail=No
         draw_body_line(canvas, l_elbow, l_wrist_render)
         draw_hand(canvas, l_wrist_render, hand_r)
         if not is_right_handed:
-            draw_racket(canvas, l_wrist_render, l_elbow, head_r, nx_racket, ny_racket, _racket_face_prev)
+            draw_racket(canvas, l_wrist_render, l_elbow, head_r, nx_racket, ny_racket, _racket_face_prev,
+                        racket_length=racket_length)
 
     def draw_r_upper_arm():
         draw_body_line(canvas, r_shoulder, r_elbow)
@@ -1189,7 +1242,8 @@ def draw_stickman(canvas, landmarks, w, h, is_right_handed=True, racket_trail=No
         draw_body_line(canvas, r_elbow, r_wrist_render)
         draw_hand(canvas, r_wrist_render, hand_r)
         if is_right_handed:
-            draw_racket(canvas, r_wrist_render, r_elbow, head_r, nx_racket, ny_racket, _racket_face_prev)
+            draw_racket(canvas, r_wrist_render, r_elbow, head_r, nx_racket, ny_racket, _racket_face_prev,
+                        racket_length=racket_length)
 
     def draw_trunk():
         draw_shorts(canvas, l_hip, r_hip, l_knee, r_knee, head_r)
@@ -1271,8 +1325,10 @@ def draw_stickman(canvas, landmarks, w, h, is_right_handed=True, racket_trail=No
         draw_func()
 
     # ── 4. 신발 그리기 ──
-    draw_shoe(canvas, l_ankle, l_heel, l_foot_idx, l_knee, head_r, is_back_view, side_key="left")
-    draw_shoe(canvas, r_ankle, r_heel, r_foot_idx, r_knee, head_r, is_back_view, side_key="right")
+    draw_shoe(canvas, l_ankle, l_heel, l_foot_idx, l_knee, head_r, is_back_view, side_key="left",
+              foot_depth=lm[L_FOOT_INDEX].z-lm[L_HEEL].z)
+    draw_shoe(canvas, r_ankle, r_heel, r_foot_idx, r_knee, head_r, is_back_view, side_key="right",
+              foot_depth=lm[R_FOOT_INDEX].z-lm[R_HEEL].z)
 
     # ── 5. 관절 각도 계산 및 오버레이 그리기 ──
     draw_angle_tasks = []
@@ -2429,6 +2485,9 @@ def render_frames(actual_input, output_path, frames, fps, orig_w, orig_h, *,
     racket_trail, hand_trail = (None, None) if no_trail else ([], [])
     racket_tracker = RacketDirectionTracker(fps)
     racket_sources = {}
+    avatar_height = body_height_pixels(frames, render_w, render_h, SCALE_FACTOR)
+    racket_length = avatar_height * RACKET_TO_BODY_HEIGHT
+    head_radius = avatar_height * .085
     cap = cv2.VideoCapture(str(actual_input)) if compare else None
     written = 0
     width = out_w * (2 if compare else 1)
@@ -2446,7 +2505,8 @@ def render_frames(actual_input, output_path, frames, fps, orig_w, orig_h, *,
                                   is_serve=is_serve, k=k, strobe_history=strobe_history,
                                   strobe_frames=strobe_frames, strobe_step=strobe_step,
                                   lag_scale=0.0 if two_handed else lag_scale, two_handed=two_handed,
-                                  racket_direction=racket_direction)
+                                  racket_direction=racket_direction, racket_length=racket_length,
+                                  head_radius=head_radius)
                 else:
                     for history in (racket_trail, hand_trail, strobe_history):
                         if history is not None:
@@ -2500,7 +2560,11 @@ def render_frames(actual_input, output_path, frames, fps, orig_w, orig_h, *,
     finally:
         if cap is not None:
             cap.release()
-    return width, out_h, written, racket_sources
+    return width, out_h, written, racket_sources, {
+        "racket_length_output_pixels": racket_length/ssaa,
+        "standing_body_height_output_pixels": avatar_height/ssaa,
+        "head_radius_output_pixels": head_radius/ssaa,
+        "racket_to_body_height_ratio": RACKET_TO_BODY_HEIGHT}
 
 
 def process_video(video_url, name, is_right_handed=True, label=None, desc=None, speed=1.0,
@@ -2561,7 +2625,7 @@ def process_video(video_url, name, is_right_handed=True, label=None, desc=None, 
         if method == "none":
             print("[i] 임팩트를 확인하지 못해 임팩트 효과를 생략합니다.")
         silent = Path(temporary) / "silent.mp4"
-        width, out_height, encoded, racket_sources = render_frames(
+        width, out_height, encoded, racket_sources, equipment = render_frames(
             actual_input, silent, frames, fps, orig_w, orig_h, height=height, ssaa=ssaa,
             speed=speed, is_right_handed=is_right_handed, is_serve=is_serve,
             label=label, desc=desc, strobe=strobe, strobe_frames=strobe_frames,
@@ -2580,6 +2644,7 @@ def process_video(video_url, name, is_right_handed=True, label=None, desc=None, 
                   "pose_gap_filled_frames": filled, "pose_missing_frames": missing_before-filled,
                   "impact_method": method, "impact_accuracy": "manual" if method == "manual" else "heuristic_estimate",
                   "racket_direction_sources": racket_sources,
+                  "equipment": equipment,
                   "impacts": [{"clip_frame": f, "source_time_seconds": start+f/fps,
                                "output_time_seconds": f/fps/speed} for f in impacts],
                   "options": {"stroke": stroke, "is_right_handed": is_right_handed, "two_handed": two_handed,

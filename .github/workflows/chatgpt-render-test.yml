@@ -1,0 +1,36 @@
+name: ChatGPT Alcaraz render test
+
+on:
+  push:
+    branches:
+      - chatgpt-render-test-20260910
+
+permissions:
+  contents: read
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install render dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy opencv-python-headless pillow
+      - name: Run uploaded equipment contract tests
+        run: python test_equipment.py
+      - name: Render actual 288-frame Alcaraz pose cache
+        run: python tools/chatgpt_render_cache_test.py
+      - name: Upload browser-safe MP4
+        uses: actions/upload-artifact@v4
+        with:
+          name: alcaraz-upgrade3-test
+          path: |
+            renders/chatgpt_test/alcaraz_upgrade3_browser_safe.mp4
+            renders/chatgpt_test/diagnostics.json
+          if-no-files-found: error
+          retention-days: 3

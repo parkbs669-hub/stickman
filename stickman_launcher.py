@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parent
 
 
 def build_command(source, name, output, speed, height, stroke, left, two_handed, compare, strobe):
-    command = [sys.executable, "-u", str(ROOT / "tennis_stickman_v12_4_upgraded.py"),
+    command = [sys.executable, "-u", str(ROOT / "tennis_stickman_humanized.py"),
                source, name, "--output-dir", output, "--speed", speed,
                "--height", height, "--stroke", stroke, "--ensemble"]
     for flag, enabled in [("--left", left), ("--two-handed", two_handed),
@@ -28,7 +28,7 @@ class Launcher:
         self.window = window
         self.running = False
         self.events = queue.Queue()
-        window.title("Tennis Stickman · v12.4 업그레이드")
+        window.title("Tennis Stickman · Humanized")
         window.geometry("820x630")
         window.minsize(700, 520)
         self.source = tk.StringVar()
@@ -44,7 +44,7 @@ class Launcher:
         frame = ttk.Frame(window, padding=20)
         frame.pack(fill="both", expand=True)
         frame.columnconfigure(1, weight=1)
-        ttk.Label(frame, text="테니스 영상을 스틱맨으로", font=("맑은 고딕", 18, "bold")).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 15))
+        ttk.Label(frame, text="테니스 영상을 사람 비율 스틱맨으로", font=("맑은 고딕", 18, "bold")).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 15))
         self.controls = []
         for row, (label, variable) in enumerate([("영상 파일", self.source), ("결과 이름", self.name), ("저장 폴더", self.output)], 1):
             ttk.Label(frame, text=label).grid(row=row, column=0, sticky="w", padx=(0, 12), pady=5)
@@ -72,7 +72,7 @@ class Launcher:
             check = ttk.Checkbutton(toggles, text=text, variable=variable)
             check.pack(side="left", padx=(0, 18))
             self.controls.append(check)
-        ttk.Label(frame, text="forehand: 포핸드 · backhand: 백핸드 · serve: 서브\n자동 임팩트는 추정치입니다. 같은 이름의 결과는 덮어쓰지 않습니다.").grid(row=6, column=0, columnspan=3, sticky="w", pady=12)
+        ttk.Label(frame, text="forehand: 포핸드 · backhand: 백핸드 · serve: 서브\n사람 비율·상세 신발·축소 라켓 렌더러가 기본 적용됩니다. 자동 임팩트는 추정치입니다.").grid(row=6, column=0, columnspan=3, sticky="w", pady=12)
         actions = ttk.Frame(frame)
         actions.grid(row=7, column=0, columnspan=3, sticky="ew")
         self.start_button = ttk.Button(actions, text="영상 만들기", command=self.start)
@@ -90,7 +90,7 @@ class Launcher:
         path = filedialog.askopenfilename(filetypes=[("동영상", "*.mp4 *.mov *.mkv *.avi *.webm"), ("모든 파일", "*.*")])
         if path:
             self.source.set(path)
-            self.name.set(Path(path).stem + "_upgraded")
+            self.name.set(Path(path).stem + "_humanized")
 
     def pick_output(self):
         path = filedialog.askdirectory(initialdir=self.output.get())
